@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Сканер упаковки — Свердловская область</title>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; font-family: system-ui, sans-serif; }
+  body { background: #f4f6f2; color: #222; max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 12px 0; text-align: center; }
+  #videoWrap { position: relative; width: 100%; }
+  #video { width: 100%; border-radius: 12px; background: #000; display: block;
+           object-fit: cover; aspect-ratio: 4 / 3; }
+  /* Если картинка с камеры повёрнута — раскомментируйте одну из строк ниже */
+  /* #video { transform: rotate(90deg); }   <- поворот на 90 градусов */
+  /* #video { transform: scaleX(-1); }      <- зеркальное отражение */
+  .err { margin-top: 10px; padding: 10px; border-radius: 8px; background: #fde8e8; color: #a33; font-size: 14px; }
+  #controls { text-align: center; margin-top: 10px; }
+  button { padding: 10px 18px; border: none; border-radius: 8px; background: #2f6fd6; color: #fff; font-size: 16px; margin: 4px; cursor: pointer; }
+  button.demo { background: #4a9c3f; }
+  .manual-row { display: flex; gap: 8px; margin-top: 8px; }
+  .manual-row input { flex: 1; padding: 10px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; }
+  #result { margin-top: 16px; padding: 16px; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.08); display: none; }
+  #result img { max-width: 120px; border-radius: 8px; float: right; margin-left: 12px; }
+  .material { margin-top: 12px; padding: 12px; border-radius: 10px; font-size: 17px; font-weight: 600; background: #dce9ff; border: 2px solid #2f6fd6; }
+  .guess { background: #fff3d6; border-color: #d6a72f; }
+  .disposal { margin-top: 8px; padding: 12px; border-radius: 10px; font-size: 16px; background: #e4f4e0; border: 2px solid #4a9c3f; }
+  .note { font-size: 13px; color: #666; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>Сканер упаковки</h1>
+
+<div id="videoWrap">
+  <video id="video" autoplay muted playsinline></video>
+</div>
+<div id="camError"></div>
+
+<div id="controls">
+  <button id="scanBtn" onclick="toggleScan()">Сканировать камерой</button>
+  <button class="demo" onclick="showExample()">Показать пример</button>
+</div>
+
+<div class="manual-row">
+  <input id="manual" inputmode="numeric" placeholder="Или введите штрихкод вручную">
+  <button onclick="lookup(document.getElementById('manual').value)">Проверить</button>
+</div>
+
+<div id="result">
+  <div id="productInfo"></div>
+  <div id="materialInfo"></div>
+</div>
+
+<p class="note">Проект действует в Свердловской области. База товаров: Open Food Facts.</p>
+
+<script>
+const video = document.getElementById('video');
+let scanning = false;
+let detector = null;
+let zxingReader = null;
+let stream = null;
+
+// ===== ПРИМЕР РАБОТЫ (демо без камеры) =====
+function showExample() {
+  stopScan();
+  document.getElementById('result').style.display = 'block';
+  document.getElementById('productInfo').innerHTML =
+    '<b>Молоко «Простоквашино» 2,5%</b><br>Простоквашино (демо-пример)';
+  document.getElementById('materialInfo').innerHTML =
+    '<div class="material guess">Упаковка: предположительно PET-бутылка (пластик, маркировка 1).<br>' +
+    '<span style="font-weight:400;font-size:14px">Уточните по значку на дне бутылки.</span></div>' +
+    '<div class="disposal">Куда выбрасывать: контейнер для сухого вторсырья (пластик). Перед выбросом ополоснуть.</div>';
+}
+
+// ===== 1. СКАНИРОВАНИЕ ШТРИХКОДА =====
+async function toggleScan() {
+  if (scanning) return stopScan();
+  document.getElementById('camError').innerHTML = '';
+  scanning = true;
+  document.getElementById('scanBtn').textContent = 'Остановить камеру';
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+  } catch (e) {
+    scanning = false;
+    document.getElementById('scanBtn').textContent = 'Сканировать камерой';
+    document.getElementById('camError').innerHTML =
+      '<div class="err">Камера не запустилась: ' + e.name + '. Разрешите доступ к камере в настройках браузера.</div>';
+    return;
+  }
+
+  video.srcObject = stream;
+
+  if ('BarcodeDetector' in window) {
+    detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'code_128'] });
+    tick();
+  } else {
+    zxingReader = new ZXing.BrowserMultiFormatReader();
+    zxingReader.decodeFromVideoElement(video, (result) => {
+      if (result) { lookup(result.getText()); stopScan(); }
+    });
+  }
+}
+
+async function tick() {
+  if (!scanning) return;
+  try {
+    const codes = await detector.detect(video);
+    if (codes.length) { lookup(codes[0].rawValue); stopScan(); return; }
+  } catch (e) {}
+  requestAnimationFrame(tick);
+}
+
+function stopScan() {
+  scanning = false;
+  document.getElementById('scanBtn').textContent = 'Сканировать камерой';
+  if (zxingReader) { try { zxingReader.reset(); } catch (e) {} zxingReader = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+}
+
+// ===== 2. ЗАПРОС К OPEN FOOD FACTS =====
+async function lookup(code) {
+  code = String(code).replace(/\D/g, '');
+  if (!code) return;
+
+  stopScan();
+  const box = document.getElementById('result');
+  box.style.display = 'block';
+  document.getElementById('productInfo').innerHTML = 'Ищем товар в базе…';
+  document.getElementById('materialInfo').innerHTML = '';
+
+  let data;
+  try {
+    const r = await fetch('https://world.openfoodfacts.org/api/v2/product/' + code +
+      '.json?fields=product_name,product_name_ru,brands,image_front_url,packaging,packaging_materials,packaging_tags,categories,categories_tags');
+    data = await r.json();
+  } catch (e) {
+    document.getElementById('productInfo').innerHTML = 'Ошибка сети. Проверьте интернет.';
+    return;
+  }
+
+  if (data.status !== 1) {
+    document.getElementById('productInfo').innerHTML =
+      'Товар со штрихкодом ' + code + ' не найден в базе Open Food Facts.';
+    document.getElementById('materialInfo').innerHTML = '';
+    return;
+  }
+
+  const p = data.product;
+  const name = p.product_name_ru || p.product_name || 'Без названия';
+
+  document.getElementById('productInfo').innerHTML =
+    (p.image_front_url ? '<img src="' + p.image_front_url + '">' : '') +
+    '<b>' + name + '</b><br>' + (p.brands || '');
+
+  const packText = [
+    (p.packaging_materials || []).map(m => (m && m.id) || m).join(', '),
+    (p.packaging_tags || []).join(', '),
+    p.packaging || ''
+  ].filter(Boolean).join(', ').trim();
+
+  const catText = [
+    (p.categories_tags || []).join(', '),
+    p.categories || ''
+  ].join(' ').toLowerCase();
+
+  document.getElementById('materialInfo').innerHTML = buildMaterialInfo(packText, catText);
+}
+
+// ===== 3. МАТЕРИАЛ И КОНТЕЙНЕР =====
+const MATERIALS = [
+  ['PET (пластик, маркировка 1)',            /(pet|pete|polyethylene terephthalate|1-pet|пэт)/i],
+  ['HDPE (пластик, маркировка 2)',           /(hdpe|pe-hd|2-hdpe|пэвд)/i],
+  ['LDPE (плёнка или пакет, маркировка 4)',  /(ldpe|pe-ld|4-ldpe|плёнк|пакет|film|фольг)/i],
+  ['PP (пластик, маркировка 5)',             /(^|\W)(pp|polypropylene|5-pp|полипропилен)/i],
+  ['PS (пластик, маркировка 6)',             /(ps|polystyrene|6-ps|полистирол)/i],
+  ['Другой пластик (маркировка 7)',          /(other|7-o|plastic|пластик|plastique)/i],
+  ['Стекло',                                 /(glass|стекло|verre)/i],
+  ['Металл (алюминий или жесть)',            /(metal|aluminium|aluminum|steel|tin|метал|алюмин|жестян|can)/i],
+  ['Бумага или картон',                      /(paper|cardboard|бумаг|картон|carton(?! brick))/i],
+  ['Тетрапак',                               /(tetra|тетрапак|carton brick|brick)/i]
+];
+
+const GUESS = [
+  ['Тетрапак (пакет из картона и фольги)',  /(juice|сок|nectar|нектар|milk|молок|kefir|кефир|cocktail|коктейль)/],
+  ['PET-бутылка (пластик, маркировка 1)',   /(milk|молок|вода|water|lemonade|лимонад|soda|напиток|beverage|oil|масло|ketchup|кетчуп|sauce|соус)/],
+  ['Алюминиевая банка (металл)',            /(beer|пиво|cola|кола|energy|энергетик|canned|консерв|tuna|тунец|beans|боб)/],
+  ['Стеклянная банка или бутылка (стекло)', /(jar|банк|jam|варенье|honey|мёд|preserve|консерв|baby-food|детское-питание)/],
+  ['Банка из полипропилена (пластик, 5)',   /(yogurt|йогурт|sour-cream|сметан|cottage-cheese|творог|cheese|сыр|butter|масло-сливочн|margarine|маргарин|ice-cream|мороженое)/],
+  ['Плёнка или пакет (пластик, маркировка 4)', /(chips|чипс|candy|конфет|sweet|сладост|snack|снек|chocolate|шоколад|cookie|печенье|bread|хлеб|bakery|выпечка|sausage|колбас|сосиск|dumpling|пельмен)/],
+  ['Картонная коробка (бумага/картон)',     /(pasta|макарон|cereal|хлопья|muesli|мюсли|flour|мука|sugar|сахар|rice|рис|grain|крупа|tea|чай|coffee|кофе|egg|яйц|waffle|вафли|pizza|пицца)/]
+];
+
+const DISPOSAL = {
+  plastic:  'Куда выбрасывать: контейнер для сухого вторсырья (пластик). Перед выбросом ополоснуть.',
+  glass:    'Куда выбрасывать: контейнер для стекла или сдать в пункт приёма стеклотары.',
+  metal:    'Куда выбрасывать: контейнер для сухого вторсырья (металл).',
+  paper:    'Куда выбрасывать: контейнер для сухого вторсырья (бумага/картон).',
+  tetra:    'Куда выбрасывать: контейнер для сухого вторсырья (тетрапак).',
+  unknown:  'Куда выбрасывать: контейнер для смешанных отходов.'
+};
+
+function disposalFor(label) {
+  if (label.startsWith('Стекло')) return DISPOSAL.glass;
+  if (label.startsWith('Металл') || label.startsWith('Алюминиевая')) return DISPOSAL.metal;
+  if (label.startsWith('Бумага') || label.startsWith('Картонная')) return DISPOSAL.paper;
+  if (label.startsWith('Тетрапак')) return DISPOSAL.tetra;
+  if (/пластик|ПЭТ|PET|HDPE|LDPE|PP|PS|Банка из полипропилена/.test(label)) return DISPOSAL.plastic;
+  return DISPOSAL.unknown;
+}
+
+function buildMaterialInfo(packText, catText) {
+  if (packText) {
+    for (const [label, regex] of MATERIALS) {
+      if (regex.test(packText)) {
+        return '<div class="material">Упаковка: ' + label + '</div>' +
+               '<div class="disposal">' + disposalFor(label) + '</div>';
+      }
+    }
+    return '<div class="material unknown">Упаковка в базе: ' + packText + ' (точный материал определить не удалось)</div>' +
+           '<div class="disposal">' + DISPOSAL.unknown + '</div>';
+  }
+
+  for (const [label, regex] of GUESS) {
+    if (regex.test(catText)) {
+      return '<div class="material guess">Упаковка: предположительно ' + label +
+             '.<br><span style="font-weight:400;font-size:14px">Уточните по значку на дне или боку упаковки.</span></div>' +
+             '<div class="disposal">' + disposalFor(label) + '</div>';
+    }
+  }
+
+  return '<div class="material unknown">Упаковку определить не удалось</div>' +
+         '<div class="disposal">' + DISPOSAL.unknown + '</div>';
+}
+</script>
+
+</body>
+</html>
